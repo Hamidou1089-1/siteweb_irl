@@ -37,7 +37,16 @@ function Projects() {
             link: "/projects/option-pricer",
             category: "Finance",
             github: "https://github.com/Hamidou1089-1/Quantum-Finance/tree/main"
+        },
+        {
+            title: "Dynamique stochastique des réseaux",
+            description: "Un pricer d'Option C++, afin de profiter des avantages du langage. Ce pricer est designer afin de pouvoir pricer plusieurs type d'instruments financiers. ",
+            tags: ["Finance Quantitative", "C++", "Option", "Controle stochastique", "Simulation"],
+            link: "/projects/network-dynamics",
+            category: "Recherche",
+            github: "https://github.com/Hamidou1089-1/Quantum-Finance/tree/main"
         }
+
     ];
 
     // Filtrer les projets par catégorie
