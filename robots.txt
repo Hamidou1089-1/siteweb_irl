@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://hamidou1089-1.github.io/siteweb_irl/sitemap.xml
