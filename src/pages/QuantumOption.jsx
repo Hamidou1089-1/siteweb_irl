@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom';
+import SyntaxHighlighter from 'react-syntax-highlighter';
+import { docco } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 
 function QuantumOption() {
     return (
@@ -102,13 +104,17 @@ function QuantumOption() {
                         </div>
 
                         <h2>Aperçu du code</h2>
-                        <pre style={{
-                            backgroundColor: '#f5f5f5',
-                            padding: '1rem',
-                            borderRadius: '8px',
-                            overflowX: 'auto',
-                            marginBottom: '2rem'
-                        }}>
+                        <SyntaxHighlighter
+                            language="python"
+                            style={docco}
+                            customStyle={{
+                                backgroundColor: '#f0ebff', // Violet très clair
+                                padding: '1rem',
+                                borderRadius: '8px',
+                                marginBottom: '2rem',
+                                border: '1px solid #e0d8ff' // Bordure légère pour définir les limites
+                            }}
+                        >
 {`# Extrait du code d'implémentation réelle
 import numpy as np
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
@@ -209,7 +215,7 @@ def qae_eval(qc_pricer):
     
     result = iae.estimate(problem).estimation
     return result`}
-            </pre>
+                        </SyntaxHighlighter>
 
                         <h2>Conclusion</h2>
                         <p style={{ marginBottom: '1rem' }}>
