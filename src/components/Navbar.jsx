@@ -61,6 +61,13 @@ function Navbar() {
                             Option Pricer
                         </Link>
                         <Link
+                            to="/network-dynamics"
+                            className={`nav-link ${isActive('/option-pricer') ? 'active' : ''}`}
+                            onClick={() => setMenuOpen(false)}
+                        >
+                            Network Dynamics
+                        </Link>
+                        <Link
                             to="/contact"
                             className={`nav-link ${isActive('/contact') ? 'active' : ''}`}
                             onClick={() => setMenuOpen(false)}

@@ -8,6 +8,7 @@ import Projects from './pages/Projects';
 import Contact from './pages/Contact';
 import QuantumOption from './pages/QuantumOption';
 import OptionPricer from './pages/OptionPricer';
+import NetworkDynamics from './pages/NetworkDynamics';
 import './App.css';
 
 // Import des icônes Font Awesome
@@ -36,6 +37,9 @@ function App() {
                     <Route path="/contact" element={<Contact />} />
                     <Route path="/projects/quantum-option" element={<QuantumOption />} />
                     <Route path="/projects/option-pricer" element={<OptionPricer />} />
+                    <Route path="/option-pricer" element={<OptionPricer />} />
+                    <Route path="/projects/network-dynamics" element={<NetworkDynamics />} />
+                    <Route path="/network-dynamics" element={<NetworkDynamics />} />
                 </Routes>
             </main>
             <Footer />
