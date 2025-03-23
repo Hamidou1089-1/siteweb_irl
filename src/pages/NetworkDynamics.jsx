@@ -4,13 +4,14 @@ import SyntaxHighlighter from 'react-syntax-highlighter';
 import { docco } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import * as d3 from 'd3';
 
 // Register ChartJS components
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 function NetworkDynamics() {
-    // Ref for the network simulation canvas
-    const networkCanvasRef = useRef(null);
+    // Ref for the network simulation SVG
+    const networkRef = useRef(null);
 
     // State for simulation parameters
     const [simulationParams, setSimulationParams] = useState({
@@ -198,120 +199,154 @@ function NetworkDynamics() {
         };
     };
 
-    // Render network visualization using canvas
+    // Render network visualization using D3.js
     useEffect(() => {
-        if (!networkCanvasRef.current || !network.nodes.length) return;
+        if (!networkRef.current || !network.nodes.length) return;
 
-        const canvas = networkCanvasRef.current;
-        const ctx = canvas.getContext('2d');
-        const width = canvas.width;
-        const height = canvas.height;
+        // Clear previous visualization
+        d3.select(networkRef.current).selectAll("*").remove();
 
-        // Force-directed graph layout
-        const simulation = () => {
-            // Clear canvas
-            ctx.clearRect(0, 0, width, height);
+        const width = 800;
+        const height = 500;
+        const nodeRadius = 12;
 
-            // Apply forces
-            network.nodes.forEach(node => {
-                node.vx = 0;
-                node.vy = 0;
+        // Create SVG element
+        const svg = d3.select(networkRef.current)
+            .attr("width", width)
+            .attr("height", height)
+            .attr("viewBox", [0, 0, width, height]);
 
-                // Repulsive force from other nodes
-                network.nodes.forEach(otherNode => {
-                    if (node !== otherNode) {
-                        const dx = node.x - otherNode.x;
-                        const dy = node.y - otherNode.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-                        const force = 200 / (distance * distance);
+        // Create tooltip
+        const tooltip = d3.select("body").append("div")
+            .attr("class", "d3-tooltip")
+            .style("position", "absolute")
+            .style("visibility", "hidden")
+            .style("background-color", "rgba(0, 0, 0, 0.7)")
+            .style("color", "white")
+            .style("padding", "8px")
+            .style("border-radius", "4px")
+            .style("font-size", "12px")
+            .style("pointer-events", "none")
+            .style("z-index", "1000");
 
-                        node.vx += dx * force;
-                        node.vy += dy * force;
-                    }
-                });
-
-                // Attractive force due to links
-                network.links.forEach(link => {
-                    if (link.source === node.id) {
-                        const targetNode = network.nodes[link.target];
-                        const dx = node.x - targetNode.x;
-                        const dy = node.y - targetNode.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-
-                        node.vx -= dx * 0.01 * distance;
-                        node.vy -= dy * 0.01 * distance;
-                    } else if (link.target === node.id) {
-                        const sourceNode = network.nodes[link.source];
-                        const dx = node.x - sourceNode.x;
-                        const dy = node.y - sourceNode.y;
-                        const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-
-                        node.vx -= dx * 0.01 * distance;
-                        node.vy -= dy * 0.01 * distance;
-                    }
-                });
-
-                // Boundary forces
-                const padding = 30;
-                if (node.x < padding) node.vx += 1;
-                if (node.x > width - padding) node.vx -= 1;
-                if (node.y < padding) node.vy += 1;
-                if (node.y > height - padding) node.vy -= 1;
-
-                // Update position
-                node.x += node.vx * 0.1;
-                node.y += node.vy * 0.1;
-
-                // Keep within bounds
-                node.x = Math.max(padding, Math.min(width - padding, node.x));
-                node.y = Math.max(padding, Math.min(height - padding, node.y));
+        // Add zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.5, 5])
+            .on("zoom", (event) => {
+                g.attr("transform", event.transform);
             });
 
-            // Draw links
-            ctx.strokeStyle = 'rgba(200, 200, 200, 0.6)';
-            ctx.lineWidth = 1;
+        svg.call(zoom);
 
-            network.links.forEach(link => {
-                const source = network.nodes[link.source];
-                const target = network.nodes[link.target];
+        // Create container for all elements
+        const g = svg.append("g");
 
-                ctx.beginPath();
-                ctx.moveTo(source.x, source.y);
-                ctx.lineTo(target.x, target.y);
-                ctx.stroke();
+        // Prepare the data for D3
+        const nodes = network.nodes.map(node => ({...node}));
+        const links = network.links.map(link => ({
+            ...link,
+            source: nodes[link.source],
+            target: nodes[link.target]
+        }));
+
+        // Create the force simulation
+        const simulation = d3.forceSimulation(nodes)
+            .force("link", d3.forceLink(links).id(d => d.id).distance(80))
+            .force("charge", d3.forceManyBody().strength(-300))
+            .force("center", d3.forceCenter(width / 2, height / 2))
+            .force("collision", d3.forceCollide().radius(nodeRadius * 1.5));
+
+        // Create links
+        const link = g.selectAll(".link")
+            .data(links)
+            .enter()
+            .append("line")
+            .attr("class", "link")
+            .attr("stroke", "#aaa")
+            .attr("stroke-width", d => Math.sqrt(d.value))
+            .attr("stroke-opacity", 0.6);
+
+        // Create node groups
+        const node = g.selectAll(".node")
+            .data(nodes)
+            .enter()
+            .append("g")
+            .attr("class", "node")
+            .call(d3.drag()
+                .on("start", dragstarted)
+                .on("drag", dragged)
+                .on("end", dragended));
+
+        // Add circles to nodes
+        node.append("circle")
+            .attr("r", nodeRadius)
+            .attr("fill", d => d.defaulted ? "rgba(255, 50, 50, 0.8)" : "rgba(50, 150, 255, 0.8)")
+            .attr("stroke", d => d.defaulted ? "rgba(200, 0, 0, 0.8)" : "rgba(0, 100, 200, 0.8)")
+            .attr("stroke-width", 2)
+            .on("mouseover", function(event, d) {
+                d3.select(this).attr("r", nodeRadius * 1.2);
+                tooltip
+                    .style("visibility", "visible")
+                    .html(`
+                        <strong>${d.name}</strong><br/>
+                        Actifs: ${d.assets.toFixed(2)}<br/>
+                        Dettes: ${d.liabilities.toFixed(2)}<br/>
+                        Valeur nette: ${(d.assets - d.liabilities).toFixed(2)}<br/>
+                        ${d.defaulted ? "<span style='color:red'>En défaut</span>" : "<span style='color:green'>Stable</span>"}
+                    `);
+            })
+            .on("mousemove", function(event) {
+                tooltip
+                    .style("top", (event.pageY - 10) + "px")
+                    .style("left", (event.pageX + 10) + "px");
+            })
+            .on("mouseout", function() {
+                d3.select(this).attr("r", nodeRadius);
+                tooltip.style("visibility", "hidden");
             });
 
-            // Draw nodes
-            network.nodes.forEach(node => {
-                const radius = 10 + (node.assets - node.liabilities) * 0.05;
+        // Add text labels
+        node.append("text")
+            .attr("dy", -nodeRadius - 5)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "11px")
+            .text(d => d.name);
 
-                // Node fill based on default status
-                ctx.fillStyle = node.defaulted
-                    ? 'rgba(255, 50, 50, 0.8)'
-                    : 'rgba(50, 150, 255, 0.8)';
+        // Drag functions
+        function dragstarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
 
-                ctx.beginPath();
-                ctx.arc(node.x, node.y, Math.max(5, radius), 0, Math.PI * 2);
-                ctx.fill();
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
 
-                // Draw node border
-                ctx.strokeStyle = node.defaulted
-                    ? 'rgba(200, 0, 0, 0.8)'
-                    : 'rgba(0, 100, 200, 0.8)';
-                ctx.lineWidth = 2;
-                ctx.stroke();
+        function dragended(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
 
-                // Draw node label
-                ctx.fillStyle = '#333';
-                ctx.font = '10px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText(node.name, node.x, node.y - radius - 5);
-            });
+        // Update positions on each tick
+        simulation.on("tick", () => {
+            link
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
 
-            requestAnimationFrame(simulation);
+            node
+                .attr("transform", d => `translate(${d.x},${d.y})`);
+        });
+
+        // Cleanup function
+        return () => {
+            tooltip.remove();
+            simulation.stop();
         };
-
-        simulation();
     }, [network]);
 
     // Chart options
@@ -658,11 +693,11 @@ def simulate_network_contagion():
 
                                 <div style={{
                                     display: 'grid',
-                                    gridTemplateColumns: '1fr 1fr',
+                                    gridTemplateColumns: '3fr 1fr',
                                     gap: '1.5rem',
-                                    marginBottom: '2rem'
+                                    position: 'relative'
                                 }}>
-                                    {/* Network Visualization */}
+                                    {/* Network Visualization - Now takes more space */}
                                     <div style={{
                                         background: 'var(--color-background)',
                                         padding: '1rem',
@@ -675,11 +710,11 @@ def simulate_network_contagion():
                                             &nbsp;&nbsp;
                                             <span style={{ display: 'inline-block', width: '12px', height: '12px', borderRadius: '50%', backgroundColor: 'rgba(255, 50, 50, 0.8)', marginRight: '5px' }}></span> Banques en défaut
                                         </p>
-                                        <div style={{height:'400px', marginBottom: '1rem'}}>
-                                            <canvas
-                                                ref={networkCanvasRef}
-                                                width="700"
-                                                height="400"
+                                        <div style={{ height: '500px', marginBottom: '1rem', overflow: 'hidden' }}>
+                                            <svg
+                                                ref={networkRef}
+                                                width="800"
+                                                height="500"
                                                 style={{
                                                     width: '100%',
                                                     height: '100%',
@@ -687,16 +722,22 @@ def simulate_network_contagion():
                                                     borderRadius: '8px',
                                                     backgroundColor: '#f8f8ff'
                                                 }}
-                                            ></canvas>
+                                            ></svg>
+                                            <div style={{ fontSize: '0.8rem', textAlign: 'center', marginTop: '0.5rem' }}>
+                                                <em>Conseil : Utilisez la molette pour zoomer et cliquez-glissez pour déplacer les nœuds</em>
+                                            </div>
                                         </div>
                                     </div>
 
-                                    {/* Simulation Controls */}
+                                    {/* Simulation Controls - Now sticky */}
                                     <div style={{
                                         background: 'var(--color-background)',
                                         padding: '1rem',
                                         borderRadius: '12px',
-                                        boxShadow: '0 4px 12px var(--color-border)'
+                                        boxShadow: '0 4px 12px var(--color-border)',
+                                        position: 'sticky',
+                                        top: '100px',
+                                        height: 'fit-content'
                                     }}>
                                         <h3>Paramètres de Simulation</h3>
                                         <div style={{ marginBottom: '1rem' }}>
