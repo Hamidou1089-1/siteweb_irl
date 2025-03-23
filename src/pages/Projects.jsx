@@ -29,6 +29,14 @@ function Projects() {
             tags: ["Finance", "Java", "Méthode Bootstrap"],
             link: "/projects/bond-pricer",
             category: "Finance"
+        },
+        {
+            title: "Pricer d'Option C++",
+            description: "Un pricer d'Option C++, afin de profiter des avantages du langage. Ce pricer est designer afin de pouvoir pricer plusieurs type d'instruments financiers. ",
+            tags: ["Finance Quantitative", "C++", "Option", "Controle stochastique", "Simulation"],
+            link: "/projects/option-pricer",
+            category: "Finance",
+            github: "https://github.com/Hamidou1089-1/Quantum-Finance/tree/main"
         }
     ];
 

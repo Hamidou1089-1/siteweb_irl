@@ -335,6 +335,8 @@ textarea.form-control {
   font-size: 0.875rem;
 }
 
+
+
 /* Responsive design */
 @media (max-width: 992px) {
   .about-grid,

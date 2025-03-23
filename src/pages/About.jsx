@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom';
+import profileImage from '../assets/profile.png';
+
 
 function About() {
     // Compétences
@@ -21,7 +23,7 @@ function About() {
             degree: "Licence en Mathématiques",
             institution: "Sorbonne Université",
             period: "2022 - 2024",
-            details: "Avec mention — Analyse réelle, Probabilités, Algèbre linéaire"
+            details: "Avec mention Bien — Théorie de la mesure, Topologie, Calcul différentiel, Analyse complexe, Analyse numérique, Probabilités, Algèbre linéaire"
         }
     ];
 
@@ -60,7 +62,8 @@ function About() {
             date: "Janvier 2025",
             details: [
                 "Construction de courbe de taux avec la méthode bootstrap",
-                "Visualisation des résultats avec Matplotlib"
+                "Visualisation des résultats avec Matplotlib",
+                "Prix: Coup de coeur du jury"
             ]
         }
     ];
@@ -102,7 +105,7 @@ function About() {
                         </div>
                         <div className="about-image">
                             <img
-                                src="/src/assets/profile.png"
+                                src={profileImage}
                                 alt="Hamidou Diallo"
                             />
                         </div>

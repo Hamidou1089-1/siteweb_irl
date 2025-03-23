@@ -24,7 +24,7 @@ function Footer() {
                                 <i className="fab fa-linkedin"></i>
                             </a>
                             <a
-                                href="https://github.com/"
+                                href="https://github.com/Hamidou1089-1"
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="social-link"

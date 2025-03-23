@@ -54,6 +54,13 @@ function Navbar() {
                             Projets
                         </Link>
                         <Link
+                            to="/option-pricer"
+                            className={`nav-link ${isActive('/option-pricer') ? 'active' : ''}`}
+                            onClick={() => setMenuOpen(false)}
+                        >
+                            Option Pricer
+                        </Link>
+                        <Link
                             to="/contact"
                             className={`nav-link ${isActive('/contact') ? 'active' : ''}`}
                             onClick={() => setMenuOpen(false)}

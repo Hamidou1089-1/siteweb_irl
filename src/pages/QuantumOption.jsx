@@ -223,7 +223,7 @@ def qae_eval(qc_pricer):
                             de la finance quantitative, particulièrement pour le pricing d'options. Nos tests montrent
                             qu'avec une précision ε = 0.01, les méthodes Monte Carlo classiques nécessitent environ
                             10 000 simulations (complexité en O(1/ε²)), tandis que notre approche quantique nécessite
-                            théoriquement seulement 100 itérations (complexité en O(1/ε)), représentant un gain
+                            seulement 100 itérations (complexité en O(1/ε)), représentant un gain
                             potentiel de performance de 100×.
                         </p>
 
@@ -244,10 +244,10 @@ def qae_eval(qc_pricer):
 
                     <div>
                         <div style={{
-                            background: 'white',
+                            background: 'var(--color-background)',
                             padding: '1.5rem',
                             borderRadius: '12px',
-                            boxShadow: '0 5px 15px rgba(0, 0, 0, 0.05)',
+                            boxShadow: '0 5px 15px var(--color-border)',
                             position: 'sticky',
                             top: '100px'
                         }}>
