@@ -10,18 +10,18 @@ import * as d3 from 'd3';
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 function NetworkDynamics() {
-    // Ref for the network simulation SVG
+    // Ref for network visualization
     const networkRef = useRef(null);
 
     // State for simulation parameters
     const [simulationParams, setSimulationParams] = useState({
-        nodes: 10,
-        connections: 0.2,
-        initialDefaultProbability: 0.1,
-        shockMagnitude: 0.5
+        numBanks: 10,
+        connectionProb: 0.2,
+        maxShockMagnitude: 0.9,
+        shockSteps: 20
     });
 
-    // State for simulation results
+    // States for simulation results
     const [simulationResults, setSimulationResults] = useState(null);
     const [isSimulating, setIsSimulating] = useState(false);
     const [activeTab, setActiveTab] = useState('overview');
@@ -29,7 +29,8 @@ function NetworkDynamics() {
     // State for network visualization
     const [network, setNetwork] = useState({
         nodes: [],
-        links: []
+        links: [],
+        obligationMatrix: []
     });
 
     // Handle parameter changes
@@ -41,174 +42,228 @@ function NetworkDynamics() {
         }));
     };
 
+    // Generate Erdös-Rényi network
+    const generateErdosRenyiNetwork = () => {
+        const { numBanks, connectionProb } = simulationParams;
+
+        // Create nodes (banks)
+        const nodes = Array.from({ length: numBanks }, (_, i) => ({
+            id: i,
+            name: `Banque ${i + 1}`,
+            externalAssets: 80 + Math.random() * 40,
+            externalLiabilities: 20 + Math.random() * 20,
+            netWorth: 0,
+            defaulted: false,
+            x: Math.random() * 600,
+            y: Math.random() * 400
+        }));
+
+        // Create obligation matrix and links (interbank obligations)
+        const links = [];
+        const obligationMatrix = Array(numBanks).fill().map(() => Array(numBanks).fill(0));
+
+        for (let i = 0; i < numBanks; i++) {
+            for (let j = 0; j < numBanks; j++) {
+                if (i !== j && Math.random() < connectionProb) {
+                    const obligation = 5 + Math.random() * 15;
+                    obligationMatrix[i][j] = obligation;
+
+                    links.push({
+                        source: i,
+                        target: j,
+                        value: obligation
+                    });
+                }
+            }
+        }
+
+        // Calculate net worth for each bank
+        for (let i = 0; i < numBanks; i++) {
+            const interbankAssets = obligationMatrix.reduce((sum, row, idx) => sum + row[i], 0);
+            const interbankLiabilities = obligationMatrix[i].reduce((sum, val) => sum + val, 0);
+
+            nodes[i].interbankAssets = interbankAssets;
+            nodes[i].interbankLiabilities = interbankLiabilities;
+            nodes[i].totalAssets = nodes[i].externalAssets + interbankAssets;
+            nodes[i].totalLiabilities = nodes[i].externalLiabilities + interbankLiabilities;
+            nodes[i].netWorth = nodes[i].totalAssets - nodes[i].totalLiabilities;
+        }
+
+        return {
+            nodes,
+            links,
+            obligationMatrix
+        };
+    };
+
+    // Eisenberg-Noe algorithm for clearing payments
+    const computeClearingPayments = (obligationMatrix, shock, externalAssets, maxIterations = 100, tol = 1e-6) => {
+        const n = obligationMatrix.length;
+
+        // Calculate total obligations (p_bar)
+        const duePayments = obligationMatrix.map(row =>
+            row.reduce((sum, val) => sum + val, 0)
+        );
+
+        // Calculate proportional obligations matrix
+        const relativeObligations = Array(n).fill().map((_, i) => {
+            if (duePayments[i] > 0) {
+                return obligationMatrix[i].map(val => val / duePayments[i]);
+            }
+            return Array(n).fill(0);
+        });
+
+        // Fixed point iteration
+        let payments = [...duePayments];
+        let newPayments;
+
+        for (let iter = 0; iter < maxIterations; iter++) {
+            // Calculate payments received by each bank
+            const paymentsReceived = Array(n).fill(0);
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < n; j++) {
+                    paymentsReceived[j] += relativeObligations[i][j] * payments[i];
+                }
+            }
+
+            // Update payments
+            newPayments = duePayments.map((p, i) =>
+                Math.min(p, Math.max(0, paymentsReceived[i] + externalAssets[i] - shock[i]))
+            );
+
+            // Check convergence
+            let maxDiff = 0;
+            for (let i = 0; i < n; i++) {
+                maxDiff = Math.max(maxDiff, Math.abs(newPayments[i] - payments[i]));
+            }
+
+            if (maxDiff < tol) {
+                return newPayments;
+            }
+
+            payments = [...newPayments];
+        }
+
+        return payments;
+    };
+
+    // Simulate contagion with shock vector
+    const simulateContagion = (network, shockMagnitude) => {
+        const { nodes, obligationMatrix } = network;
+        const numBanks = nodes.length;
+
+        // Create shock vector (proportional to external assets)
+        const shockVector = nodes.map(node => node.externalAssets * shockMagnitude);
+        const externalAssets = nodes.map(node => node.externalAssets);
+
+        // Compute clearing payments
+        const clearingPayments = computeClearingPayments(
+            obligationMatrix,
+            shockVector,
+            externalAssets
+        );
+
+        // Apply results to simulated nodes
+        const simulatedNodes = JSON.parse(JSON.stringify(nodes));
+        let defaultCount = 0;
+
+        for (let i = 0; i < numBanks; i++) {
+            // Calculate actual payments received
+            let paymentsReceived = 0;
+            for (let j = 0; j < numBanks; j++) {
+                if (obligationMatrix[j][i] > 0) {
+                    const paymentRatio = clearingPayments[j] / simulatedNodes[j].interbankLiabilities;
+                    paymentsReceived += obligationMatrix[j][i] * Math.min(1, paymentRatio);
+                }
+            }
+
+            // Update node status
+            simulatedNodes[i].externalAssets -= shockVector[i];
+            simulatedNodes[i].interbankAssets = paymentsReceived;
+            simulatedNodes[i].totalAssets = simulatedNodes[i].externalAssets + paymentsReceived;
+            simulatedNodes[i].netWorth = simulatedNodes[i].totalAssets - simulatedNodes[i].totalLiabilities;
+            simulatedNodes[i].defaulted = simulatedNodes[i].netWorth < 0;
+
+            if (simulatedNodes[i].defaulted) {
+                defaultCount++;
+            }
+        }
+
+        return {
+            simulatedNodes,
+            clearingPayments,
+            defaultCount,
+            defaultRate: defaultCount / numBanks
+        };
+    };
+
+    // Generate shock curve with multiple points
+    const generateShockCurve = () => {
+        const generatedNetwork = generateErdosRenyiNetwork();
+        const { shockSteps, maxShockMagnitude } = simulationParams;
+
+        // Generate data points for different shock magnitudes
+        const shockMagnitudes = Array.from({ length: shockSteps }, (_, i) =>
+            (i / (shockSteps - 1)) * maxShockMagnitude
+        );
+
+        const results = shockMagnitudes.map(magnitude => {
+            const result = simulateContagion(generatedNetwork, magnitude);
+            return {
+                shockMagnitude: magnitude,
+                defaultRate: result.defaultRate,
+                defaultCount: result.defaultCount
+            };
+        });
+
+        // Calculate variation of default rate
+        const variations = [];
+        for (let i = 1; i < results.length; i++) {
+            variations.push({
+                shockMagnitude: (shockMagnitudes[i] + shockMagnitudes[i-1]) / 2,
+                variation: results[i].defaultRate - results[i-1].defaultRate
+            });
+        }
+
+        // Find critical threshold (peak variation)
+        let maxVariation = {variation: 0, shockMagnitude: 0.5};
+        for (const v of variations) {
+            if (v.variation > maxVariation.variation) {
+                maxVariation = v;
+            }
+        }
+
+        return {
+            network: generatedNetwork,
+            results,
+            variations,
+            criticalThreshold: maxVariation.shockMagnitude
+        };
+    };
+
     // Run simulation
     const runSimulation = () => {
         setIsSimulating(true);
 
-        // Simulate network generation
+        // Simulate with delay to allow UI update
         setTimeout(() => {
-            // Create nodes representing banks
-            const nodes = Array.from({ length: simulationParams.nodes }, (_, i) => ({
-                id: i,
-                name: `Bank ${i + 1}`,
-                assets: 100 + Math.random() * 100,
-                liabilities: 50 + Math.random() * 100,
-                externalAssets: 50 + Math.random() * 50,
-                defaulted: false,
-                x: Math.random() * 600,
-                y: Math.random() * 400,
-                vx: 0,
-                vy: 0
-            }));
-
-            // Create links (interbank debts)
-            const links = [];
-            for (let i = 0; i < nodes.length; i++) {
-                for (let j = 0; j < nodes.length; j++) {
-                    if (i !== j && Math.random() < simulationParams.connections) {
-                        const debt = 5 + Math.random() * 15;
-                        links.push({
-                            source: i,
-                            target: j,
-                            value: debt
-                        });
-
-                        // Add the debt to the bank's balance sheet
-                        nodes[i].liabilities += debt;
-                        nodes[j].assets += debt;
-                    }
-                }
-            }
-
-            // Calculate initial net values
-            nodes.forEach(node => {
-                node.netValue = node.assets - node.liabilities;
-                node.defaulted = node.netValue < 0;
-            });
-
-            setNetwork({ nodes, links });
-
-            // Run shock simulation
-            const simulationData = simulateContagion(nodes, links, simulationParams.shockMagnitude);
-
-            setSimulationResults(simulationData);
+            const results = generateShockCurve();
+            setSimulationResults(results);
+            setNetwork(results.network);
             setIsSimulating(false);
-        }, 1000);
+        }, 500);
     };
 
-    // Simulate contagion in the banking network
-    const simulateContagion = (nodes, links, shockMagnitude) => {
-        // Deep copy nodes to avoid mutating original
-        const simulatedNodes = JSON.parse(JSON.stringify(nodes));
-
-        // Apply initial shock to random bank's external assets
-        const shockedBankIndex = Math.floor(Math.random() * simulatedNodes.length);
-        const shockedBank = simulatedNodes[shockedBankIndex];
-
-        // Reduce external assets by shock magnitude
-        const shockAmount = shockedBank.externalAssets * shockMagnitude;
-        shockedBank.externalAssets -= shockAmount;
-        shockedBank.assets -= shockAmount;
-        shockedBank.netValue = shockedBank.assets - shockedBank.liabilities;
-
-        // Check if bank defaults
-        shockedBank.defaulted = shockedBank.netValue < 0;
-
-        // Track defaults at each iteration
-        const defaultsByIteration = [simulatedNodes.filter(n => n.defaulted).length];
-        const iterations = [0];
-
-        // Simulate contagion for multiple iterations
-        let iteration = 1;
-        let anyNewDefaults = true;
-        let paymentVector = simulatedNodes.map(n => n.liabilities);
-
-        while (anyNewDefaults && iteration < 10) {
-            anyNewDefaults = false;
-
-            // Calculate payment vector using Eisenberg-Noe algorithm (simplified)
-            // In a real implementation, this would solve the fixed point problem
-
-            // Check which banks default in this iteration
-            simulatedNodes.forEach((bank, i) => {
-                if (!bank.defaulted) {
-                    // Recalculate assets based on defaulted counterparties
-                    let newAssets = bank.externalAssets;
-
-                    // Add payments from other banks
-                    links.forEach(link => {
-                        if (link.target === i) {
-                            const sourceBank = simulatedNodes[link.source];
-                            // If source bank is defaulted, they pay proportionally less
-                            const paymentRatio = sourceBank.defaulted
-                                ? Math.max(0, sourceBank.assets / sourceBank.liabilities)
-                                : 1;
-
-                            newAssets += link.value * paymentRatio;
-                        }
-                    });
-
-                    bank.assets = newAssets;
-                    bank.netValue = bank.assets - bank.liabilities;
-
-                    // Check if bank defaults in this iteration
-                    if (bank.netValue < 0) {
-                        bank.defaulted = true;
-                        anyNewDefaults = true;
-                    }
-                }
-            });
-
-            // Record defaults for this iteration
-            defaultsByIteration.push(simulatedNodes.filter(n => n.defaulted).length);
-            iterations.push(iteration);
-            iteration++;
-        }
-
-        // Calculate vulnerability metrics
-        const totalBanks = simulatedNodes.length;
-        const totalDefaulted = simulatedNodes.filter(n => n.defaulted).length;
-        const defaultRate = totalDefaulted / totalBanks;
-
-        // Calculate bank-specific vulnerability indices
-        const vulnerabilityIndices = simulatedNodes.map(bank => {
-            // Simplified vulnerability index based on connectivity and leverage
-            // In a real model, this would be more sophisticated
-            const incomingConnections = links.filter(l => l.target === bank.id).length;
-            const outgoingConnections = links.filter(l => l.source === bank.id).length;
-            const leverage = bank.liabilities / (bank.assets + 0.0001); // Avoid division by zero
-
-            return {
-                bankId: bank.id,
-                name: bank.name,
-                vulnerability: (incomingConnections * 0.7 + outgoingConnections * 0.3) * leverage,
-                defaulted: bank.defaulted
-            };
-        });
-
-        return {
-            defaultRate,
-            totalDefaulted,
-            totalBanks,
-            vulnerabilityIndices: vulnerabilityIndices.sort((a, b) => b.vulnerability - a.vulnerability),
-            iterations: iterations,
-            defaultsByIteration: defaultsByIteration,
-            contagionThreshold: simulationParams.connections > 0.3 ? "High" : "Low",
-            nodes: simulatedNodes,
-            links
-        };
-    };
-
-    // Render network visualization using D3.js
+    // Visualize network with D3
     useEffect(() => {
-        if (!networkRef.current || !network.nodes.length) return;
+        if (!networkRef.current || !network.nodes || network.nodes.length === 0) return;
 
         // Clear previous visualization
         d3.select(networkRef.current).selectAll("*").remove();
 
         const width = 800;
         const height = 500;
-        const nodeRadius = 12;
+        const nodeRadius = 8;
 
         // Create SVG element
         const svg = d3.select(networkRef.current)
@@ -241,20 +296,35 @@ function NetworkDynamics() {
         // Create container for all elements
         const g = svg.append("g");
 
-        // Prepare the data for D3
+        // Prepare data for D3
         const nodes = network.nodes.map(node => ({...node}));
         const links = network.links.map(link => ({
             ...link,
-            source: nodes[link.source],
-            target: nodes[link.target]
+            source: typeof link.source === 'object' ? link.source : nodes[link.source],
+            target: typeof link.target === 'object' ? link.target : nodes[link.target]
         }));
 
-        // Create the force simulation
+        // Create force simulation
         const simulation = d3.forceSimulation(nodes)
             .force("link", d3.forceLink(links).id(d => d.id).distance(80))
             .force("charge", d3.forceManyBody().strength(-300))
             .force("center", d3.forceCenter(width / 2, height / 2))
             .force("collision", d3.forceCollide().radius(nodeRadius * 1.5));
+
+        // Add arrow markers for directed edges
+        svg.append("defs").selectAll("marker")
+            .data(["arrow"])
+            .enter().append("marker")
+            .attr("id", "arrow")
+            .attr("viewBox", "0 -5 10 10")
+            .attr("refX", nodeRadius + 9)
+            .attr("refY", 0)
+            .attr("markerWidth", 6)
+            .attr("markerHeight", 6)
+            .attr("orient", "auto")
+            .append("path")
+            .attr("fill", "#999")
+            .attr("d", "M0,-5L10,0L0,5");
 
         // Create links
         const link = g.selectAll(".link")
@@ -263,8 +333,9 @@ function NetworkDynamics() {
             .append("line")
             .attr("class", "link")
             .attr("stroke", "#aaa")
-            .attr("stroke-width", d => Math.sqrt(d.value))
-            .attr("stroke-opacity", 0.6);
+            .attr("stroke-width", d => Math.sqrt(d.value) * 0.5)
+            .attr("stroke-opacity", 0.6)
+            .attr("marker-end", "url(#arrow)");
 
         // Create node groups
         const node = g.selectAll(".node")
@@ -289,10 +360,12 @@ function NetworkDynamics() {
                     .style("visibility", "visible")
                     .html(`
                         <strong>${d.name}</strong><br/>
-                        Actifs: ${d.assets.toFixed(2)}<br/>
-                        Dettes: ${d.liabilities.toFixed(2)}<br/>
-                        Valeur nette: ${(d.assets - d.liabilities).toFixed(2)}<br/>
-                        ${d.defaulted ? "<span style='color:red'>En défaut</span>" : "<span style='color:green'>Stable</span>"}
+                        Actifs externes: ${d.externalAssets.toFixed(2)}<br/>
+                        Actifs interbancaires: ${d.interbankAssets.toFixed(2)}<br/>
+                        Dettes externes: ${d.externalLiabilities.toFixed(2)}<br/>
+                        Dettes interbancaires: ${d.interbankLiabilities.toFixed(2)}<br/>
+                        Valeur nette: ${d.netWorth.toFixed(2)}<br/>
+                        ${d.defaulted ? "<span style='color:red'>En défaut</span>" : "<span style='color:green'>Solvable</span>"}
                     `);
             })
             .on("mousemove", function(event) {
@@ -309,8 +382,8 @@ function NetworkDynamics() {
         node.append("text")
             .attr("dy", -nodeRadius - 5)
             .attr("text-anchor", "middle")
-            .attr("font-size", "11px")
-            .text(d => d.name);
+            .attr("font-size", "10px")
+            .text(d => d.name.replace("Banque", "B"));
 
         // Drag functions
         function dragstarted(event, d) {
@@ -349,9 +422,10 @@ function NetworkDynamics() {
         };
     }, [network]);
 
-    // Chart options
-    const chartOptions = {
+    // Default chart options
+    const defaultChartOptions = {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
             legend: {
                 position: 'top',
@@ -363,30 +437,70 @@ function NetworkDynamics() {
                     }
                 }
             }
-        },
+        }
+    };
+
+    // Default rate chart options
+    const defaultRateChartOptions = {
+        ...defaultChartOptions,
         scales: {
             x: {
                 title: {
                     display: true,
-                    text: 'Itération'
+                    text: 'Mesure du Choc'
                 }
             },
             y: {
                 title: {
                     display: true,
-                    text: 'Nombre de banques en défaut'
+                    text: 'Proportion de Défauts'
+                },
+                min: 0,
+                max: 1
+            }
+        }
+    };
+
+    // Variation chart options
+    const variationChartOptions = {
+        ...defaultChartOptions,
+        scales: {
+            x: {
+                title: {
+                    display: true,
+                    text: 'Mesure du Choc'
+                }
+            },
+            y: {
+                title: {
+                    display: true,
+                    text: 'Variation de la Proportion de Défauts'
                 }
             }
         }
     };
 
-    // Data for the contagion chart
-    const contagionChartData = simulationResults ? {
-        labels: simulationResults.iterations,
+    // Data for default rate chart
+    const defaultRateChartData = simulationResults ? {
+        labels: simulationResults.results.map(r => r.shockMagnitude.toFixed(2)),
         datasets: [
             {
-                label: 'Banques en défaut',
-                data: simulationResults.defaultsByIteration,
+                label: 'Proportion de Défauts',
+                data: simulationResults.results.map(r => r.defaultRate),
+                borderColor: 'rgba(108, 99, 255, 1)',
+                backgroundColor: 'rgba(108, 99, 255, 0.2)',
+                tension: 0.3
+            }
+        ]
+    } : null;
+
+    // Data for variation chart
+    const variationChartData = simulationResults ? {
+        labels: simulationResults.variations.map(v => v.shockMagnitude.toFixed(2)),
+        datasets: [
+            {
+                label: 'Variation de la Proportion de Défauts',
+                data: simulationResults.variations.map(v => v.variation),
                 borderColor: 'rgba(200, 80, 192, 1)',
                 backgroundColor: 'rgba(200, 80, 192, 0.2)',
                 tension: 0.3
@@ -444,19 +558,19 @@ function NetworkDynamics() {
                             </div>
 
                             <div
-                                className={`tab ${activeTab === 'roadmap' ? 'active' : ''}`}
-                                onClick={() => setActiveTab('roadmap')}
+                                className={`tab ${activeTab === 'methodology' ? 'active' : ''}`}
+                                onClick={() => setActiveTab('methodology')}
                                 style={{
                                     padding: '1rem',
                                     flex: 1,
                                     textAlign: 'center',
                                     cursor: 'pointer',
-                                    borderBottom: activeTab === 'roadmap' ? '2px solid var(--color-primary)' : 'none',
-                                    fontWeight: activeTab === 'roadmap' ? '600' : '400',
-                                    color: activeTab === 'roadmap' ? 'var(--color-primary)' : 'var(--color-text)'
+                                    borderBottom: activeTab === 'methodology' ? '2px solid var(--color-primary)' : 'none',
+                                    fontWeight: activeTab === 'methodology' ? '600' : '400',
+                                    color: activeTab === 'methodology' ? 'var(--color-primary)' : 'var(--color-text)'
                                 }}
                             >
-                                Parcours de Recherche
+                                Méthodologie
                             </div>
                         </div>
 
@@ -470,213 +584,69 @@ function NetworkDynamics() {
                                     et la propagation des défauts bancaires à travers le système financier interconnecté.
                                 </p>
 
-                                <p style={{ marginBottom: '2rem' }}>
-                                    Les crises financières récentes ont mis en évidence l'importance de comprendre
-                                    comment les défaillances d'institutions financières peuvent se propager à travers
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Les crises financières récentes, comme celle de 2007-2008, ont mis en évidence l'importance de
+                                    comprendre comment les défaillances d'institutions financières peuvent se propager à travers
                                     le réseau bancaire. Ce projet vise à modéliser mathématiquement ces dynamiques
                                     et à identifier les seuils critiques au-delà desquels les interconnexions entre
                                     institutions deviennent une source de risque systémique plutôt qu'un mécanisme
                                     de diversification bénéfique.
                                 </p>
 
-                                <h2>Méthodologie</h2>
-                                <ol style={{ marginBottom: '2rem', paddingLeft: '1.5rem' }}>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Modélisation des bilans bancaires</strong> - Représentation des institutions
-                                        financières par leurs actifs (dont les prêts interbancaires) et leurs dettes, avec
-                                        une attention particulière à leur valeur nette.
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Construction de la matrice d'adjacence</strong> - Formalisation des
-                                        interconnexions bancaires à travers une matrice d'adjacence pondérée, où les
-                                        poids représentent les montants des expositions interbancaires.
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Modélisation des chocs exogènes</strong> - Introduction de vecteurs de
-                                        chocs qui affectent initialement les actifs extérieurs des banques.
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Calcul des vecteurs de paiement</strong> - Détermination des paiements
-                                        interbancaires après un choc via la résolution d'un problème de point fixe
-                                        (algorithme d'Eisenberg-Noe).
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Analyse de la vulnérabilité</strong> - Développement d'un indice de
-                                        vulnérabilité pour quantifier la sensibilité des institutions aux chocs et
-                                        à la contagion, permettant d'identifier les nœuds critiques du réseau.
-                                    </li>
-                                </ol>
+                                <p style={{ marginBottom: '2rem' }}>
+                                    Notre approche utilise des graphes aléatoires d'Erdös-Rényi pour modéliser les réseaux
+                                    interbancaires et l'algorithme d'Eisenberg et Noe pour simuler la propagation des défauts.
+                                    L'objectif principal est de quantifier la résilience du réseau face à des chocs exogènes
+                                    et d'analyser l'impact de la densité des interconnexions sur cette résilience.
+                                </p>
 
-                                <h2>Résultats attendus</h2>
+                                <h2>Questions de recherche centrales</h2>
                                 <ul style={{ marginBottom: '2rem', paddingLeft: '1.5rem' }}>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        Identification des seuils critiques d'interconnexion au-delà desquels
-                                        le risque systémique augmente significativement.
+                                        Dans quelle mesure les interconnexions permettent-elles de réduire l'impact d'un choc exogène?
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        Caractérisation des structures de réseau qui sont les plus résilientes
-                                        ou les plus vulnérables aux phénomènes de contagion.
+                                        À partir de quel seuil d'interconnexions un choc cesse-t-il d'être dilué pour, au contraire, être amplifié?
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        Développement d'indicateurs de vulnérabilité relative permettant
-                                        d'identifier les institutions dont la défaillance aurait les
-                                        conséquences les plus graves sur l'ensemble du système.
+                                        Comment quantifier précisément le risque systémique dans un réseau financier?
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        Analyse comparative des différents modèles de contagion
-                                        (Eisenberg-Noe, Rogers-Veraart, etc.) dans divers scénarios de choc.
+                                        Quel rôle joue le volume du capital échangé entre les banques à travers les dettes dans ce risque?
                                     </li>
                                 </ul>
 
-                                <h2>Technologies utilisées</h2>
-                                <div className="project-tags" style={{ marginBottom: '2rem' }}>
-                                    <span className="project-tag">Python</span>
-                                    <span className="project-tag">NetworkX</span>
-                                    <span className="project-tag">NumPy</span>
-                                    <span className="project-tag">Matplotlib</span>
-                                    <span className="project-tag">SciPy</span>
-                                    <span className="project-tag">Analyse de Réseaux</span>
-                                    <span className="project-tag">Théorie des Graphes</span>
-                                    <span className="project-tag">Finance Quantitative</span>
-                                    <span className="project-tag">Processus Stochastiques</span>
+                                <h2>Principaux résultats préliminaires</h2>
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Nos simulations mettent en évidence un phénomène intéressant : un seuil critique apparaît lorsque l'amplitude
+                                    du choc atteint environ 50% de la valeur totale des actifs extérieurs du système. À ce point précis, on
+                                    observe une augmentation significative du taux de défaut dans le réseau.
+                                </p>
+
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Contrairement à ce que suggère la théorie financière classique sur les bénéfices de la diversification,
+                                    nos résultats préliminaires indiquent que les réseaux moins connectés semblent plus résilients face aux chocs
+                                    que les réseaux densément connectés. Cette observation contre-intuitive mérite une analyse plus approfondie.
+                                </p>
+
+                                <div style={{ marginBottom: '2rem' }}>
+                                    <div className="project-tags" style={{ marginTop: '2rem' }}>
+                                        <span className="project-tag">Finance Quantitative</span>
+                                        <span className="project-tag">Théorie des Graphes</span>
+                                        <span className="project-tag">Contagion Financière</span>
+                                        <span className="project-tag">Risque Systémique</span>
+                                        <span className="project-tag">Algorithme d'Eisenberg-Noe</span>
+                                        <span className="project-tag">Graphes d'Erdös-Rényi</span>
+                                    </div>
                                 </div>
 
-                                <h2>Aperçu du code</h2>
-                                <SyntaxHighlighter
-                                    language="python"
-                                    style={docco}
-                                    customStyle={{
-                                        backgroundColor: '#f0ebff',
-                                        padding: '1rem',
-                                        borderRadius: '8px',
-                                        marginBottom: '2rem',
-                                        border: '1px solid #e0d8ff'
-                                    }}
+                                <button
+                                    onClick={() => setActiveTab('simulation')}
+                                    className="btn-primary"
+                                    style={{ marginTop: '1rem' }}
                                 >
-                                    {`# Implémentation du modèle Eisenberg-Noe pour la contagion financière
-import numpy as np
-import networkx as nx
-import matplotlib.pyplot as plt
-
-def eisenberg_noe_clearing(L, e, max_iterations=100, tol=1e-6):
-    """
-    Calcule le vecteur de paiement d'équilibre selon le modèle Eisenberg-Noe
-    
-    Paramètres:
-    L (numpy.ndarray): Matrice des engagements interbancaires
-    e (numpy.ndarray): Vecteur des actifs externes
-    max_iterations: Nombre maximal d'itérations
-    tol: Tolérance pour la convergence
-    
-    Retourne:
-    numpy.ndarray: Vecteur de paiement d'équilibre
-    """
-    n = len(e)
-    p_bar = np.sum(L, axis=1)  # Vecteur des engagements totaux
-    
-    # Matrice des proportions
-    Pi = np.zeros((n, n))
-    for i in range(n):
-        if p_bar[i] > 0:
-            Pi[i, :] = L[i, :] / p_bar[i]
-    
-    # Algorithme de point fixe
-    p = p_bar.copy()
-    for _ in range(max_iterations):
-        p_new = np.minimum(p_bar, e + Pi.T @ p)
-        if np.linalg.norm(p_new - p) < tol:
-            return p_new
-        p = p_new
-    
-    return p
-
-def calculate_vulnerability_index(G, L, e, shocks):
-    """
-    Calcule l'indice de vulnérabilité pour chaque nœud du réseau
-    
-    Paramètres:
-    G (networkx.DiGraph): Graphe dirigé représentant le réseau interbancaire
-    L (numpy.ndarray): Matrice des engagements interbancaires
-    e (numpy.ndarray): Vecteur des actifs externes initial
-    shocks (list): Liste des chocs à simuler
-    
-    Retourne:
-    dict: Indice de vulnérabilité pour chaque nœud
-    """
-    n = len(G.nodes())
-    vulnerability = {node: 0 for node in G.nodes()}
-    
-    # Pour chaque scénario de choc
-    for shock in shocks:
-        e_shocked = e.copy()
-        e_shocked[shock['node']] *= (1 - shock['magnitude'])
-        
-        # Calcul du vecteur de paiement d'équilibre
-        p = eisenberg_noe_clearing(L, e_shocked)
-        
-        # Calcul des défauts
-        defaults = p < np.sum(L, axis=1) - 1e-6
-        
-        # Mise à jour de l'indice de vulnérabilité
-        for i, node in enumerate(G.nodes()):
-            if defaults[i]:
-                vulnerability[node] += 1
-    
-    # Normalisation
-    num_shocks = len(shocks)
-    for node in vulnerability:
-        vulnerability[node] /= num_shocks
-    
-    return vulnerability
-
-# Exemple d'utilisation
-def simulate_network_contagion():
-    # Création d'un réseau aléatoire
-    n = 10  # Nombre de banques
-    p = 0.2  # Probabilité de connexion
-    
-    G = nx.gnp_random_graph(n, p, directed=True)
-    
-    # Génération des bilans aléatoires
-    np.random.seed(42)
-    external_assets = np.random.uniform(50, 150, n)
-    
-    # Matrice des engagements interbancaires
-    L = np.zeros((n, n))
-    for i, j in G.edges():
-        L[i, j] = np.random.uniform(5, 20)
-    
-    # Vecteur des actifs externes
-    e = external_assets.copy()
-    
-    # Définition des scénarios de choc
-    shocks = [
-        {'node': i, 'magnitude': 0.5} for i in range(n)
-    ]
-    
-    # Calcul de l'indice de vulnérabilité
-    vulnerability = calculate_vulnerability_index(G, L, e, shocks)
-    
-    # Visualisation du réseau avec indice de vulnérabilité
-    pos = nx.spring_layout(G)
-    node_colors = [vulnerability[node] for node in G.nodes()]
-    
-    plt.figure(figsize=(10, 8))
-    nx.draw_networkx(G, pos, node_color=node_colors, 
-                    node_size=800, cmap=plt.cm.Reds, 
-                    with_labels=True)
-    
-    edge_labels = {(i, j): f"{L[i, j]:.1f}" for i, j in G.edges()}
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
-    
-    plt.title("Réseau interbancaire avec indice de vulnérabilité")
-    plt.colorbar(plt.cm.ScalarMappable(cmap=plt.cm.Reds), 
-                label="Indice de vulnérabilité")
-    plt.axis('off')
-    plt.tight_layout()
-    
-    return G, L, e, vulnerability`}
-                                </SyntaxHighlighter>
+                                    Explorer la simulation interactive
+                                </button>
                             </div>
                         )}
 
@@ -685,51 +655,57 @@ def simulate_network_contagion():
                             <div>
                                 <h2>Simulation de Contagion Financière</h2>
                                 <p style={{ marginBottom: '1.5rem' }}>
-                                    Cette simulation interactive vous permet d'explorer les dynamiques de
-                                    contagion financière dans un réseau bancaire. Ajustez les paramètres
-                                    pour observer comment les défauts se propagent à travers le réseau et
-                                    quels facteurs influencent la stabilité systémique.
+                                    Cette simulation interactive vous permet d'explorer les dynamiques de contagion financière dans un
+                                    réseau bancaire d'Erdös-Rényi. Vous pouvez ajuster les paramètres du réseau et observer comment les
+                                    défauts se propagent à travers le système lorsque des chocs exogènes d'amplitudes croissantes sont appliqués.
                                 </p>
 
                                 <div style={{
                                     display: 'grid',
                                     gridTemplateColumns: '3fr 1fr',
                                     gap: '1.5rem',
-                                    position: 'relative'
+                                    marginBottom: '1.5rem'
                                 }}>
-                                    {/* Network Visualization - Now takes more space */}
+                                    {/* Network Visualization */}
                                     <div style={{
                                         background: 'var(--color-background)',
                                         padding: '1rem',
                                         borderRadius: '12px',
                                         boxShadow: '0 4px 12px var(--color-border)'
                                     }}>
-                                        <h3>Visualisation du Réseau</h3>
+                                        <h3>Visualisation du Réseau Interbancaire</h3>
                                         <p style={{ marginBottom: '1rem', fontSize: '0.9rem' }}>
-                                            <span style={{ display: 'inline-block', width: '12px', height: '12px', borderRadius: '50%', backgroundColor: 'rgba(50, 150, 255, 0.8)', marginRight: '5px' }}></span> Banques stables
+                                            <span style={{ display: 'inline-block', width: '12px', height: '12px', borderRadius: '50%', backgroundColor: 'rgba(50, 150, 255, 0.8)', marginRight: '5px' }}></span> Banques solvables
                                             &nbsp;&nbsp;
                                             <span style={{ display: 'inline-block', width: '12px', height: '12px', borderRadius: '50%', backgroundColor: 'rgba(255, 50, 50, 0.8)', marginRight: '5px' }}></span> Banques en défaut
                                         </p>
                                         <div style={{ height: '500px', marginBottom: '1rem', overflow: 'hidden' }}>
                                             <svg
                                                 ref={networkRef}
-                                                width="800"
-                                                height="500"
+                                                width="100%"
+                                                height="100%"
                                                 style={{
-                                                    width: '100%',
-                                                    height: '100%',
                                                     border: '1px solid var(--color-border)',
                                                     borderRadius: '8px',
                                                     backgroundColor: '#f8f8ff'
                                                 }}
                                             ></svg>
-                                            <div style={{ fontSize: '0.8rem', textAlign: 'center', marginTop: '0.5rem' }}>
-                                                <em>Conseil : Utilisez la molette pour zoomer et cliquez-glissez pour déplacer les nœuds</em>
-                                            </div>
+                                            {network.nodes && network.nodes.length > 0 ? (
+                                                <div style={{ fontSize: '0.8rem', textAlign: 'center', marginTop: '0.5rem' }}>
+                                                    <em>Conseil : Utilisez la molette pour zoomer et cliquez-glissez pour déplacer les nœuds</em>
+                                                </div>
+                                            ) : (
+                                                <div style={{
+                                                    textAlign: 'center',
+                                                    paddingTop: '200px'
+                                                }}>
+                                                    <p>Cliquez sur "Lancer la simulation" pour générer un réseau</p>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
 
-                                    {/* Simulation Controls - Now sticky */}
+                                    {/* Simulation Controls */}
                                     <div style={{
                                         background: 'var(--color-background)',
                                         padding: '1rem',
@@ -746,59 +722,80 @@ def simulate_network_contagion():
                                             </label>
                                             <input
                                                 type="range"
-                                                name="nodes"
+                                                name="numBanks"
                                                 min="5"
-                                                max="20"
-                                                value={simulationParams.nodes}
+                                                max="30"
+                                                value={simulationParams.numBanks}
                                                 onChange={handleParamChange}
                                                 style={{ width: '100%' }}
                                             />
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <span>5</span>
-                                                <span>{simulationParams.nodes}</span>
-                                                <span>20</span>
+                                                <span>{simulationParams.numBanks}</span>
+                                                <span>30</span>
                                             </div>
                                         </div>
 
                                         <div style={{ marginBottom: '1rem' }}>
                                             <label style={{ display: 'block', marginBottom: '0.25rem' }}>
-                                                Densité des connexions
+                                                Probabilité de connexion (p)
                                             </label>
                                             <input
                                                 type="range"
-                                                name="connections"
-                                                min="0.05"
-                                                max="0.5"
-                                                step="0.05"
-                                                value={simulationParams.connections}
-                                                onChange={handleParamChange}
-                                                style={{ width: '100%' }}
-                                            />
-                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <span>Faible</span>
-                                                <span>{(simulationParams.connections * 100).toFixed(0)}%</span>
-                                                <span>Élevée</span>
-                                            </div>
-                                        </div>
-
-                                        <div style={{ marginBottom: '1rem' }}>
-                                            <label style={{ display: 'block', marginBottom: '0.25rem' }}>
-                                                Magnitude du choc initial
-                                            </label>
-                                            <input
-                                                type="range"
-                                                name="shockMagnitude"
+                                                name="connectionProb"
                                                 min="0.1"
-                                                max="0.9"
+                                                max="1"
                                                 step="0.1"
-                                                value={simulationParams.shockMagnitude}
+                                                value={simulationParams.connectionProb}
                                                 onChange={handleParamChange}
                                                 style={{ width: '100%' }}
                                             />
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                                <span>Faible</span>
-                                                <span>{(simulationParams.shockMagnitude * 100).toFixed(0)}%</span>
-                                                <span>Sévère</span>
+                                                <span>5%</span>
+                                                <span>{(simulationParams.connectionProb * 100).toFixed(0)}%</span>
+                                                <span>100%</span>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ marginBottom: '1rem' }}>
+                                            <label style={{ display: 'block', marginBottom: '0.25rem' }}>
+                                                Magnitude max. du choc
+                                            </label>
+                                            <input
+                                                type="range"
+                                                name="maxShockMagnitude"
+                                                min="0.1"
+                                                max="1.0"
+                                                step="0.1"
+                                                value={simulationParams.maxShockMagnitude}
+                                                onChange={handleParamChange}
+                                                style={{ width: '100%' }}
+                                            />
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <span>10%</span>
+                                                <span>{(simulationParams.maxShockMagnitude * 100).toFixed(0)}%</span>
+                                                <span>100%</span>
+                                            </div>
+                                        </div>
+
+                                        <div style={{ marginBottom: '1.5rem' }}>
+                                            <label style={{ display: 'block', marginBottom: '0.25rem' }}>
+                                                Points de simulation
+                                            </label>
+                                            <input
+                                                type="range"
+                                                name="shockSteps"
+                                                min="5"
+                                                max="50"
+                                                step="5"
+                                                value={simulationParams.shockSteps}
+                                                onChange={handleParamChange}
+                                                style={{ width: '100%' }}
+                                            />
+                                            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                                <span>5</span>
+                                                <span>{simulationParams.shockSteps}</span>
+                                                <span>50</span>
                                             </div>
                                         </div>
 
@@ -830,79 +827,63 @@ def simulate_network_contagion():
                                             gap: '1.5rem',
                                             marginBottom: '1.5rem'
                                         }}>
+                                            {/* Default Rate Chart */}
                                             <div>
-                                                <h4>Statistiques générales</h4>
-                                                <ul style={{ listStyle: 'none', padding: 0 }}>
-                                                    <li style={{ marginBottom: '0.5rem' }}>
-                                                        <strong>Taux de défaut final:</strong> {(simulationResults.defaultRate * 100).toFixed(1)}%
-                                                    </li>
-                                                    <li style={{ marginBottom: '0.5rem' }}>
-                                                        <strong>Nombre de banques en défaut:</strong> {simulationResults.totalDefaulted} / {simulationResults.totalBanks}
-                                                    </li>
-                                                    <li style={{ marginBottom: '0.5rem' }}>
-                                                        <strong>Seuil de contagion estimé:</strong> {simulationResults.contagionThreshold}
-                                                    </li>
-                                                </ul>
+                                                <h4>Proportion de Défauts vs Mesure du Choc</h4>
+                                                <div style={{ height: '300px' }}>
+                                                    <Line
+                                                        data={defaultRateChartData}
+                                                        options={defaultRateChartOptions}
+                                                    />
+                                                </div>
+                                                <div style={{
+                                                    textAlign: 'center',
+                                                    marginTop: '0.5rem',
+                                                    fontSize: '0.9rem',
+                                                    color: 'var(--color-text-light)'
+                                                }}>
+                                                    Ce graphique montre comment la proportion de banques en défaut
+                                                    augmente avec l'amplitude du choc exogène.
+                                                </div>
                                             </div>
 
+                                            {/* Variation Chart */}
                                             <div>
-                                                <h4>Évolution des défauts</h4>
-                                                <div style={{ height: '200px' }}>
+                                                <h4>Variation de la Proportion de Défauts</h4>
+                                                <div style={{ height: '300px' }}>
                                                     <Line
-                                                        data={contagionChartData}
-                                                        options={chartOptions}
+                                                        data={variationChartData}
+                                                        options={variationChartOptions}
                                                     />
+                                                </div>
+                                                <div style={{
+                                                    textAlign: 'center',
+                                                    marginTop: '0.5rem',
+                                                    fontSize: '0.9rem',
+                                                    color: 'var(--color-text-light)'
+                                                }}>
+                                                    Ce graphique met en évidence le seuil critique autour duquel la
+                                                    contagion s'accélère dans le réseau.
                                                 </div>
                                             </div>
                                         </div>
 
-                                        <h4>Indices de vulnérabilité</h4>
-                                        <div style={{
-                                            maxHeight: '200px',
-                                            overflowY: 'auto',
-                                            border: '1px solid var(--color-border)',
-                                            borderRadius: '8px',
-                                            padding: '0.5rem'
-                                        }}>
-                                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                                                <thead>
-                                                <tr>
-                                                    <th style={{ padding: '0.5rem', textAlign: 'left', borderBottom: '1px solid var(--color-border)' }}>Banque</th>
-                                                    <th style={{ padding: '0.5rem', textAlign: 'left', borderBottom: '1px solid var(--color-border)' }}>Indice de vulnérabilité</th>
-                                                    <th style={{ padding: '0.5rem', textAlign: 'left', borderBottom: '1px solid var(--color-border)' }}>Statut</th>
-                                                </tr>
-                                                </thead>
-                                                <tbody>
-                                                {simulationResults.vulnerabilityIndices.map((bank, index) => (
-                                                    <tr key={index}>
-                                                        <td style={{ padding: '0.5rem', borderBottom: '1px solid var(--color-border)' }}>{bank.name}</td>
-                                                        <td style={{ padding: '0.5rem', borderBottom: '1px solid var(--color-border)' }}>{bank.vulnerability.toFixed(3)}</td>
-                                                        <td style={{
-                                                            padding: '0.5rem',
-                                                            borderBottom: '1px solid var(--color-border)',
-                                                            color: bank.defaulted ? 'red' : 'green',
-                                                            fontWeight: 'bold'
-                                                        }}>
-                                                            {bank.defaulted ? 'En défaut' : 'Stable'}
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-
                                         <div style={{ marginTop: '1.5rem' }}>
-                                            <h4>Analyse et conclusion</h4>
+                                            <h4>Analyse des résultats</h4>
+                                            <p style={{ marginBottom: '1rem' }}>
+                                                <strong>Seuil critique détecté :</strong> {(simulationResults.criticalThreshold * 100).toFixed(1)}% de la valeur des actifs externes
+                                            </p>
+                                            <p style={{ marginBottom: '1rem' }}>
+                                                Cette simulation confirme l'existence d'un seuil critique dans la propagation des défauts,
+                                                {simulationResults.criticalThreshold > 0.45 && simulationResults.criticalThreshold < 0.55 ?
+                                                    ' correspondant à environ 50% de la valeur des actifs, ce qui est conforme à nos observations théoriques.' :
+                                                    ` situé à ${(simulationResults.criticalThreshold * 100).toFixed(1)}% de la valeur des actifs.`}
+                                            </p>
                                             <p>
-                                                Cette simulation démontre {simulationResults.defaultRate > 0.3 ?
-                                                'une forte propagation de la contagion financière' :
-                                                'une résistance du réseau à la contagion financière'}.
-                                                La densité des connexions interbancaires semble {simulationParams.connections > 0.3 ?
-                                                'amplifier' :
-                                                'absorber'} les chocs, ce qui suggère
-                                                {simulationParams.connections > 0.3 ?
-                                                    ' qu\'un réseau moins dense pourrait être plus stable dans ce scénario.' :
-                                                    ' qu\'un certain niveau d\'interconnexion peut renforcer la stabilité systémique.'}
+                                                La densité du réseau (p = {simulationParams.connectionProb.toFixed(2)}) influence la
+                                                résilience du système. {simulationParams.connectionProb > 0.5 ?
+                                                'Ce réseau densément connecté montre une propagation rapide des défauts au-delà du seuil critique, suggérant que les fortes interconnexions peuvent amplifier la contagion plutôt que la diluer.' :
+                                                'Ce réseau peu connecté montre une certaine résistance à la propagation des défauts, mais le seuil critique reste observable.'}
                                             </p>
                                         </div>
                                     </div>
@@ -915,216 +896,211 @@ def simulate_network_contagion():
                                     marginBottom: '1rem',
                                     boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
                                 }}>
-                                    <h3>Limitations de la simulation</h3>
-                                    <p>
-                                        Cette simulation est une version simplifiée des modèles réels utilisés dans la recherche.
-                                        Dans un contexte de recherche complète, nous prendrions en compte:
+                                    <h3>Note sur la simulation</h3>
+                                    <p style={{ marginBottom: '1rem' }}>
+                                        Cette simulation est une implémentation JavaScript de notre modèle Python original, et
+                                        reproduit les principales caractéristiques de notre recherche, notamment l'utilisation
+                                        de graphes d'Erdös-Rényi et l'algorithme d'Eisenberg-Noe pour le calcul des vecteurs de paiement.
                                     </p>
-                                    <ul style={{ marginTop: '0.5rem' }}>
-                                        <li>La résolution exacte du problème de point fixe pour le vecteur de paiement</li>
-                                        <li>L'hétérogénéité des bilans bancaires et des règles de priorité des créanciers</li>
-                                        <li>Les effets des prix des actifs et les ventes en urgence (fire sales)</li>
-                                        <li>Les différents types de chocs et leurs distributions de probabilité</li>
-                                        <li>La dynamique temporelle des ajustements de bilan</li>
-                                    </ul>
+                                    <p>
+                                        Pour explorer plus en détail la méthodologie et les aspects mathématiques, consultez l'onglet
+                                        "Méthodologie". Pour accéder au code source Python complet et aux résultats détaillés de nos recherches,
+                                        rendez-vous sur notre dépôt GitHub via le lien dans l'encadré à droite.
+                                    </p>
                                 </div>
                             </div>
                         )}
 
-                        {/* Roadmap Tab */}
-                        {activeTab === 'roadmap' && (
+                        {/* Methodology Tab */}
+                        {activeTab === 'methodology' && (
                             <div>
-                                <h2>Parcours de Recherche</h2>
+                                <h2>Méthodologie détaillée</h2>
                                 <p style={{ marginBottom: '1.5rem' }}>
-                                    Ce parcours détaille l'évolution de ma recherche sur la dynamique stochastique
-                                    des réseaux financiers, de la compréhension initiale du sujet à l'exploration
-                                    des modèles avancés et des simulations.
+                                    Notre approche méthodologique combine la théorie des graphes aléatoires, les modèles
+                                    d'équilibre financier et les simulations numériques pour étudier la contagion dans
+                                    les réseaux financiers.
                                 </p>
 
-                                <div style={{
-                                    position: 'relative',
-                                    paddingLeft: '2rem',
-                                    marginBottom: '2rem'
+                                <h3>1. Modélisation du réseau financier</h3>
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Nous représentons le réseau interbancaire par un graphe dirigé pondéré G = (N, E) où:
+                                </p>
+                                <ul style={{ marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        N = {'{1, 2, ..., n}'} représente l'ensemble des banques
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        E ⊆ N × N représente les expositions interbancaires
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        La matrice d'obligations [I] encode les dettes entre banques, où [I]ij représente
+                                        la dette de la banque i envers la banque j
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        Chaque banque possède également des actifs externes (c) et des dettes externes (b)
+                                    </li>
+                                </ul>
+
+                                <div className="code-block" style={{
+                                    background: '#f0ebff',
+                                    padding: '1rem',
+                                    borderRadius: '8px',
+                                    marginBottom: '1.5rem'
                                 }}>
-                                    {/* Vertical timeline line */}
-                                    <div style={{
-                                        position: 'absolute',
-                                        left: '0.75rem',
-                                        top: '0',
-                                        bottom: '0',
-                                        width: '2px',
-                                        background: 'var(--gradient-primary)'
-                                    }}></div>
-
-                                    {/* Timeline entries */}
-                                    <div style={{ marginBottom: '2rem', position: 'relative' }}>
-                                        {/* Timeline dot */}
-                                        <div style={{
-                                            position: 'absolute',
-                                            left: '-2.3rem',
-                                            top: '0.5rem',
-                                            width: '1rem',
-                                            height: '1rem',
-                                            borderRadius: '50%',
-                                            background: 'var(--gradient-primary)'
-                                        }}></div>
-
-                                        <h3>Février 2025 - Phase d'exploration initiale</h3>
-                                        <p style={{ marginBottom: '0.5rem' }}>
-                                            Durant le premier mois au laboratoire, j'ai exploré la portée du sujet
-                                            et ses applications potentielles en finance:
-                                        </p>
-                                        <ul style={{ marginBottom: '1rem', paddingLeft: '1.5rem' }}>
-                                            <li>Lecture de l'article "The spread of innovations in social networks" (Montanari & Saberi)</li>
-                                            <li>Exploration des concepts fondamentaux de la théorie des réseaux</li>
-                                            <li>Discussions avec mes superviseurs pour préciser l'orientation du projet</li>
-                                        </ul>
-                                        <div className="project-tags">
-                                            <span className="project-tag">Théorie des réseaux</span>
-                                            <span className="project-tag">Diffusion d'innovations</span>
-                                            <span className="project-tag">Sciences sociales</span>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ marginBottom: '2rem', position: 'relative' }}>
-                                        <div style={{
-                                            position: 'absolute',
-                                            left: '-2.3rem',
-                                            top: '0.5rem',
-                                            width: '1rem',
-                                            height: '1rem',
-                                            borderRadius: '50%',
-                                            background: 'var(--gradient-primary)'
-                                        }}></div>
-
-                                        <h3>Mars 2025 - Focalisation sur les réseaux financiers</h3>
-                                        <p style={{ marginBottom: '0.5rem' }}>
-                                            Après plusieurs échanges avec mes superviseurs, j'ai réorienté mes lectures
-                                            vers des modèles spécifiquement adaptés aux réseaux financiers:
-                                        </p>
-                                        <ul style={{ marginBottom: '1rem', paddingLeft: '1.5rem' }}>
-                                            <li>Lecture des travaux fondamentaux d'Eisenberg et Noe sur les systèmes de paiement interbancaires</li>
-                                            <li>Étude de l'article "Contagion in Financial Networks" par Glasserman et Young</li>
-                                            <li>Évaluation des différents indicateurs de contagion financière</li>
-                                        </ul>
-                                        <div className="project-tags">
-                                            <span className="project-tag">Systèmes de paiement</span>
-                                            <span className="project-tag">Contagion financière</span>
-                                            <span className="project-tag">Modèle Eisenberg-Noe</span>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ marginBottom: '2rem', position: 'relative' }}>
-                                        <div style={{
-                                            position: 'absolute',
-                                            left: '-2.3rem',
-                                            top: '0.5rem',
-                                            width: '1rem',
-                                            height: '1rem',
-                                            borderRadius: '50%',
-                                            background: 'var(--gradient-primary)'
-                                        }}></div>
-
-                                        <h3>Avril 2025 - Développement du modèle</h3>
-                                        <p style={{ marginBottom: '0.5rem' }}>
-                                            J'ai commencé à développer mon propre modèle en me concentrant sur les
-                                            interconnexions bancaires à travers les dettes:
-                                        </p>
-                                        <ul style={{ marginBottom: '1rem', paddingLeft: '1.5rem' }}>
-                                            <li>Modélisation des bilans bancaires simplifiés (actifs et dettes)</li>
-                                            <li>Conception d'une représentation matricielle (matrice d'adjacence pondérée)</li>
-                                            <li>Élaboration d'un vecteur de vulnérabilité pour quantifier la sensibilité des banques aux chocs</li>
-                                            <li>Implémentation préliminaire en Python avec NetworkX et NumPy</li>
-                                        </ul>
-                                        <div className="project-tags">
-                                            <span className="project-tag">Bilans bancaires</span>
-                                            <span className="project-tag">Matrice d'adjacence</span>
-                                            <span className="project-tag">Indice de vulnérabilité</span>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ marginBottom: '0', position: 'relative' }}>
-                                        <div style={{
-                                            position: 'absolute',
-                                            left: '-2.3rem',
-                                            top: '0.5rem',
-                                            width: '1rem',
-                                            height: '1rem',
-                                            borderRadius: '50%',
-                                            background: 'var(--gradient-primary)'
-                                        }}></div>
-
-                                        <h3>Mai 2025 - Simulations et analyses</h3>
-                                        <p style={{ marginBottom: '0.5rem' }}>
-                                            Phase actuelle: je mène des simulations pour tester les effets de différents
-                                            paramètres et structures de réseau sur la contagion financière:
-                                        </p>
-                                        <ul style={{ marginBottom: '1rem', paddingLeft: '1.5rem' }}>
-                                            <li>Implémentation de l'algorithme d'Eisenberg-Noe pour le calcul des vecteurs de paiement</li>
-                                            <li>Simulations de chocs avec différentes structures de réseau et densités de connections</li>
-                                            <li>Analyse des seuils critiques à partir desquels la contagion s'accélère</li>
-                                            <li>Développement de visualisations pour mieux comprendre les dynamiques du réseau</li>
-                                        </ul>
-                                        <div className="project-tags">
-                                            <span className="project-tag">Simulations Monte Carlo</span>
-                                            <span className="project-tag">Analyse de seuils critiques</span>
-                                            <span className="project-tag">Visualisation de réseaux</span>
-                                        </div>
-                                    </div>
+                                    <p style={{ fontFamily: 'monospace', fontSize: '0.9rem' }}>
+                                        Bilan simplifié d'une banque i:<br/>
+                                        <br/>
+                                        Actifs:<br/>
+                                        - Prêts interbancaires: Σj[I]ji<br/>
+                                        - Actifs extérieurs: ci<br/>
+                                        <br/>
+                                        Passifs:<br/>
+                                        - Emprunts interbancaires: Σj[I]ij<br/>
+                                        - Passifs extérieurs: bi<br/>
+                                        <br/>
+                                        Valeur nette = Σj[I]ji + ci - Σj[I]ij - bi
+                                    </p>
                                 </div>
 
-                                <h2>Prochaines étapes</h2>
-                                <ul style={{ marginBottom: '2rem', paddingLeft: '1.5rem' }}>
+                                <h3>2. Génération du réseau Erdös-Rényi</h3>
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Pour nos simulations, nous utilisons le modèle de graphe aléatoire d'Erdös-Rényi G(n,p) où:
+                                </p>
+                                <ul style={{ marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Raffinement du modèle</strong> - Introduction de l'hétérogénéité des
-                                        banques et des contrats d'obligations avec différentes priorités.
+                                        n est le nombre de banques
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Expansion aux effets de prix</strong> - Intégration des effets de
-                                        liquidation forcée (fire sales) et leur impact sur les prix des actifs.
+                                        p est la probabilité qu'il existe une arête (obligation) entre deux nœuds
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Validation empirique</strong> - Confrontation du modèle avec des
-                                        données réelles de réseaux interbancaires (si accessibles).
+                                        Les obligations sont générées selon une distribution gamma
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        <strong>Rédaction du rapport de recherche</strong> - Synthèse des résultats
-                                        et élaboration d'un article de recherche sur le sujet.
+                                        Les actifs extérieurs sont ajustés pour garantir que toutes les banques sont initialement solvables
                                     </li>
                                 </ul>
 
-                                <h2>Lectures clés</h2>
-                                <ul style={{ paddingLeft: '1.5rem' }}>
+                                <h3>3. Application de chocs exogènes</h3>
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Nous définissons un choc exogène comme le non-remboursement d'entités extérieures au système bancaire:
+                                </p>
+                                <ul style={{ marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        Montanari, A., & Saberi, A. (2010).
-                                        <em> The spread of innovations in social networks.</em>
-                                        Proceedings of the National Academy of Sciences.
+                                        Pour une banque i, le choc xi ∈ [0, ci] représente une réduction de ses actifs extérieurs
                                     </li>
                                     <li style={{ marginBottom: '0.5rem' }}>
-                                        Eisenberg, L., & Noe, T. H. (2001).
-                                        <em> Systemic risk in financial systems.</em>
-                                        Management Science.
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        Glasserman, P., & Young, H. P. (2016).
-                                        <em> Contagion in Financial Networks.</em>
-                                        Journal of Economic Literature.
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        Jackson, M. O. (2010).
-                                        <em> Social and Economic Networks.</em>
-                                        Princeton University Press.
-                                    </li>
-                                    <li style={{ marginBottom: '0.5rem' }}>
-                                        Rogers, L. C. G., & Veraart, L. A. M. (2013).
-                                        <em> Failure and rescue in an interbank network.</em>
-                                        Management Science.
+                                        La mesure de gravité du choc g = ||x|| / ||c|| ∈ [0, 1] quantifie l'amplitude relative du choc
                                     </li>
                                 </ul>
+
+                                <h3>4. Algorithme d'Eisenberg-Noe</h3>
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Pour déterminer les paiements d'équilibre après un choc, nous utilisons l'algorithme itératif d'Eisenberg-Noe:
+                                </p>
+
+                                <SyntaxHighlighter
+                                    language="python"
+                                    style={docco}
+                                    customStyle={{
+                                        backgroundColor: '#f0ebff',
+                                        padding: '1rem',
+                                        borderRadius: '8px',
+                                        marginBottom: '1.5rem',
+                                        border: '1px solid #e0d8ff'
+                                    }}
+                                >
+                                    {`def compute_clearing_payments(self, max_iterations: int, shock_vector: np.array) -> np.array:
+    """
+    Calculates the clearing payments within a financial network. The method iteratively
+    computes a vector of payments until it stabilizes (converges), taking into account
+    the shock vector, due payments, relative liabilities, and outside assets.
+
+    :param max_iterations: The maximum number of iterations allowed for the convergence
+        computation.
+    :param shock_vector: A numpy array representing the external shocks applied to
+        each node in the financial network.
+    :return: A numpy array representing the stabilized vector of payments after
+        iterative computation.
+    """
+
+    vector_of_payments = self.network.due_payements
+    if np.all(shock_vector == 0):
+        return vector_of_payments
+    while True:
+        # Calculer de nouveaux paiements basés sur les paiements actuels
+        new_vector_of_payments = np.minimum(self.network.due_payements, np.maximum(self.network.matrix_relative_liabilities.T @ vector_of_payments - shock_vector + self.network.vector_outside_asset,0))
+
+        # Vérifier si nous avons convergé
+        if np.allclose(new_vector_of_payments, vector_of_payments, 0.000000001):
+            return new_vector_of_payments
+
+        # Mettre à jour pour la prochaine itération
+        vector_of_payments = new_vector_of_payments`}
+                                </SyntaxHighlighter>
+
+                                <p style={{ marginBottom: '1.5rem' }}>
+                                    Cet algorithme trouve le point fixe de la transformation φ(P) = min(P̄, max(0, R^T P - x + c)), où:
+                                </p>
+                                <ul style={{ marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        P̄ représente le vecteur des obligations totales
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        R est la matrice des proportions de dettes (obligations normalisées)
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        x est le vecteur de choc
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        c est le vecteur des actifs externes
+                                    </li>
+                                </ul>
+
+                                <h3>5. Analyse des résultats</h3>
+                                <p style={{ marginBottom: '1rem' }}>
+                                    Après avoir calculé les vecteurs de paiement d'équilibre, nous analysons:
+                                </p>
+                                <ul style={{ marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        La proportion de défauts d = (Nombre de défauts / N) en fonction de la mesure du choc g
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        La variation de la proportion de défauts pour identifier les seuils critiques
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        La relation entre la densité du réseau (p) et sa résilience
+                                    </li>
+                                </ul>
+
+                                <h3>Limites et développements futurs</h3>
+                                <ul style={{ marginBottom: '1.5rem', paddingLeft: '1.5rem' }}>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        Notre modèle actuel ne considère que des chocs exogènes, sans prendre en compte les chocs endogènes ou les effets de liquidité
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        La dynamique temporelle des défauts n'est pas pleinement exploitée
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        D'autres topologies de réseau (scale-free, small-world) pourraient offrir des perspectives complémentaires
+                                    </li>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        L'influence des cycles dans le réseau sur la propagation des défauts mérite une analyse plus approfondie
+                                    </li>
+                                </ul>
+
+                                <button
+                                    onClick={() => setActiveTab('simulation')}
+                                    className="btn-primary"
+                                    style={{ marginTop: '1rem' }}
+                                >
+                                    Retourner à la simulation
+                                </button>
                             </div>
                         )}
                     </div>
 
+                    {/* Side Panel */}
                     <div>
                         <div style={{
                             background: 'var(--color-background)',
@@ -1165,11 +1141,12 @@ def simulate_network_contagion():
                                 <div className="project-tags" style={{ marginTop: '0.5rem' }}>
                                     <span className="project-tag">Python</span>
                                     <span className="project-tag">NetworkX</span>
-                                    <span className="project-tag">Finance</span>
+                                    <span className="project-tag">NumPy</span>
+                                    <span className="project-tag">Matplotlib</span>
                                 </div>
                             </div>
 
-                            <div>
+                            <div style={{ marginBottom: '1.5rem' }}>
                                 <h4 style={{ fontSize: '1rem', marginBottom: '0.25rem' }}>État du projet</h4>
                                 <div style={{
                                     width: '100%',
@@ -1189,6 +1166,44 @@ def simulate_network_contagion():
                                     En cours (55% complété)
                                 </p>
                             </div>
+
+                            <div>
+                                <h4 style={{ fontSize: '1rem', marginBottom: '0.25rem' }}>Ressources</h4>
+                                <ul style={{ listStyle: 'none', padding: 0 }}>
+                                    <li style={{ marginBottom: '0.5rem' }}>
+                                        <a href="https://github.com/Hamidou1089-1/Stage_Inria_dynamique" target="_blank" rel="noopener noreferrer" className="btn-secondary" style={{ display: 'block', textAlign: 'center' }}>
+                                            <i className="fab fa-github" style={{ marginRight: '0.5rem' }}></i>Code source
+                                        </a>
+                                    </li>
+                                    <li>
+                                        <a href="/src/assets/rapport_risque_systemique_mai_2025.pdf" target="_blank" rel="noopener noreferrer" className="btn-secondary" style={{ display: 'block', textAlign: 'center' }}>
+                                            Rapport préliminaire (PDF)
+                                        </a>
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        {/* Citation */}
+                        <div style={{
+                            background: 'linear-gradient(135deg, rgba(108, 99, 255, 0.05) 0%, rgba(200, 80, 192, 0.1) 100%)',
+                            padding: '1.5rem',
+                            borderRadius: '12px',
+                            marginTop: '1.5rem',
+                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.05)'
+                        }}>
+                            <h4>Citation clé</h4>
+                            <blockquote style={{
+                                fontStyle: 'italic',
+                                margin: '1rem 0',
+                                padding: '0.5rem 1rem',
+                                borderLeft: '3px solid var(--color-primary)'
+                            }}>
+                                "Notre principale observation réside dans l'identification d'un seuil critique lorsque le choc atteint approximativement 50% de la valeur totale des actifs extérieurs du système. Ce seuil se manifeste par un pic dans la variation de la proportion de défauts, suivi d'une relative stabilisation."
+                            </blockquote>
+                            <p style={{ textAlign: 'right', fontSize: '0.9rem' }}>
+                                — Extrait du rapport de recherche, Mai 2025
+                            </p>
                         </div>
                     </div>
                 </div>
